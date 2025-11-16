@@ -1,0 +1,16 @@
+yw-playground-*.json
+.venv/
+__pycache__/
+*.png
+# Pip/build artifacts
+pip-wheel-metadata/
+pip-delete-this-directory.txt
+*.egg-info/
+build/
+dist/
+# Temporary and log files
+tmp/
+temp/
+*.log
+*.cache
+uv.lock

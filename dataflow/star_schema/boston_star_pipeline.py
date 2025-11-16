@@ -1,5 +1,5 @@
 import argparse
-from typing import Dict, Any, Tuple, List
+from typing import Dict, Any, Tuple, List, Optional, Iterable
 
 import apache_beam as beam
 from apache_beam.options.pipeline_options import PipelineOptions, SetupOptions
@@ -23,7 +23,7 @@ COLUMN_MAPPING = {
 
 
 class RenameColumnsDoFn(beam.DoFn):
-    def process(self, element: Dict[str, Any]) -> Dict[str, Any]:
+    def process(self, element: Dict[str, Any]) -> Iterable[Dict[str, Any]]:
         renamed = {}
         for src, dst in COLUMN_MAPPING.items():
             if src not in element:
@@ -36,11 +36,11 @@ def run(
     project: str,
     input_table: str,
     output_table: str,
-    region: str | None = None,
-    temp_location: str | None = None,
-    runner: str | None = None,
+    region: Optional[str] = None,
+    temp_location: Optional[str] = None,
+    runner: Optional[str] = None,
     save_main_session: bool = True,
-    pipeline_args: List[str] | None = None,
+    pipeline_args: Optional[List[str]] = None,
 ) -> None:
     extra_options: Dict[str, Any] = {"project": project}
 
@@ -89,7 +89,7 @@ def run(
         )
 
 
-def parse_args(argv: List[str] | None = None) -> Tuple[argparse.Namespace, List[str]]:
+def parse_args(argv: Optional[List[str]] = None) -> Tuple[argparse.Namespace, List[str]]:
     parser = argparse.ArgumentParser()
 
     parser.add_argument("--project", required=True)
@@ -103,7 +103,7 @@ def parse_args(argv: List[str] | None = None) -> Tuple[argparse.Namespace, List[
     return known_args, pipeline_args
 
 
-def main(argv: List[str] | None = None) -> None:
+def main(argv: Optional[List[str]] = None) -> None:
     known_args, pipeline_args = parse_args(argv)
     run(
         project=known_args.project,

@@ -20,7 +20,7 @@ def etl_boston_star_p1_pipeline(
     DataflowFlexTemplateJobOp(
         project=project_id,
         location=region,
-        template_file_gcs_path=template_file_gcs_path,
+        container_spec_gcs_path=template_file_gcs_path,
         job_name="boston-star-p1",
         parameters={
             "project": project_id,
