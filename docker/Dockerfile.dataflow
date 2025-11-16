@@ -1,0 +1,15 @@
+# syntax=docker/dockerfile:1
+
+FROM gcr.io/dataflow-templates-base/python39-template-launcher-base AS base
+
+WORKDIR /app
+
+COPY pyproject.toml ./
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir apache-beam[gcp]==2.56.0 google-cloud-bigquery google-cloud-aiplatform
+
+COPY dataflow/ ./dataflow/
+
+ENV FLEX_TEMPLATE_PYTHON_PY_FILE="dataflow/star_schema/boston_star_pipeline.py"
+
+ENTRYPOINT ["/opt/google/dataflow/python_template_launcher"]

@@ -1,0 +1,22 @@
+# syntax=docker/dockerfile:1
+
+FROM python:3.12-slim AS base
+
+RUN apt-get update && apt-get install -y --no-install-recommends     git curl ca-certificates   && rm -rf /var/lib/apt/lists/*
+
+FROM ghcr.io/astral-sh/uv:python3.12-bookworm AS uv-src
+
+FROM base AS app
+
+COPY --from=uv-src /uv /uvx /bin/
+
+WORKDIR /app
+
+COPY pyproject.toml ./
+RUN uv sync --frozen || uv sync
+
+COPY . .
+
+ENV PATH="/app/.venv/bin:${PATH}"
+
+CMD ["/bin/bash"]

@@ -1,0 +1,41 @@
+{
+  "name": "boston_star_p1_flex",
+  "description": "P1.1.1: Boston housing raw -> star schema fact (snake_case) using Dataflow Flex Template.",
+  "parameters": [
+    {
+      "name": "project",
+      "label": "GCP Project ID",
+      "helpText": "GCP project id used by the pipeline.",
+      "paramType": "TEXT",
+      "isOptional": false
+    },
+    {
+      "name": "region",
+      "label": "Region",
+      "helpText": "GCP region for the Dataflow job.",
+      "paramType": "TEXT",
+      "isOptional": false
+    },
+    {
+      "name": "temp_location",
+      "label": "GCS Temp Location",
+      "helpText": "GCS path for temporary files (e.g. gs://bucket/tmp/).",
+      "paramType": "TEXT",
+      "isOptional": false
+    },
+    {
+      "name": "input_table",
+      "label": "Input BigQuery Table",
+      "helpText": "Input table in BigQuery, e.g. project.raw.boston_raw.",
+      "paramType": "TEXT",
+      "isOptional": false
+    },
+    {
+      "name": "output_table",
+      "label": "Output BigQuery Table",
+      "helpText": "Output table in BigQuery, e.g. project.star.boston_fact_p1.",
+      "paramType": "TEXT",
+      "isOptional": false
+    }
+  ]
+}
