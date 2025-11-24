@@ -14,3 +14,4 @@ temp/
 *.log
 *.cache
 uv.lock
+*.csv

@@ -6,7 +6,7 @@ from kfp import dsl
 
 @dsl.pipeline(
     name="etl-boston-star-p1-flex",
-    description="P1.1.1: Boston Raw -> Star fact (snake_case) via Dataflow Flex Template.",
+    description="P1.1.1: Boston の Raw データを Dataflow Flex Template で Star スキーマ（snake_case）に変換するパイプライン。",
 )
 def etl_boston_star_p1_pipeline(
     project_id: str,
@@ -16,12 +16,14 @@ def etl_boston_star_p1_pipeline(
     input_table: str,
     output_table: str,
     service_account: Optional[str] = None,
+    job_name: Optional[str] = None,
 ):
+    resolved_job_name = job_name or "boston-star-p1"
     DataflowFlexTemplateJobOp(
         project=project_id,
         location=region,
         container_spec_gcs_path=template_file_gcs_path,
-        job_name="boston-star-p1",
+        job_name=resolved_job_name,
         parameters={
             "project": project_id,
             "region": region,

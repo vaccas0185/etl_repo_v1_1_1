@@ -2,14 +2,17 @@
 set -euo pipefail
 
 PROJECT_ID="${1:-}"
-REGION="${2:-}"
+REGION="${2:-us-central1}"
 ARTIFACT_REPO="${3:-}"
 TEMPLATE_GCS_PATH="${4:-}"
 
-if [[ -z "${PROJECT_ID}" || -z "${REGION}" || -z "${ARTIFACT_REPO}" || -z "${TEMPLATE_GCS_PATH}" ]]; then
-  echo "Usage: $0 PROJECT_ID REGION ARTIFACT_REPO TEMPLATE_GCS_PATH" >&2
+if [[ -z "${PROJECT_ID}" ]]; then
+  echo "Usage: $0 PROJECT_ID [REGION] [ARTIFACT_REPO] [TEMPLATE_GCS_PATH]" >&2
   exit 1
 fi
+
+ARTIFACT_REPO="${ARTIFACT_REPO:-dataflow-${PROJECT_ID}}"
+TEMPLATE_GCS_PATH="${TEMPLATE_GCS_PATH:-gs://dataflow-${PROJECT_ID}}"
 
 IMAGE_NAME="boston-star-p1-flex"
 IMAGE_URI="${REGION}-docker.pkg.dev/${PROJECT_ID}/${ARTIFACT_REPO}/${IMAGE_NAME}:latest"

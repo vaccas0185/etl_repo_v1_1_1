@@ -3,31 +3,61 @@ README
 ## 目的
 `onboarding_p1.1.md` に書かれた Boston P1.1.1 の流れ（ローカル DirectRunner → flex テンプレート生成 → Dataflow 実行）を網羅的に追いながら、まっさらな開発者が GCP でデプロイと実行確認まで完了できるように手順と注意点を整理したドキュメントです。
 
+## ディレクトリ構成
+
+リポジトリ内の主要ディレクトリとファイルをツリー形式でまとめています（コメント付き）。
+
+```text
+.
+├── dataflow/                      # Beam パイプラインと変換ロジック
+│   └── star_schema/               # Boston 用 Star スキーマ実装（boston_star_pipeline.py）
+├── pipelines/                     # Vertex AI などから起動するパイプライン定義（etl_boston_star_p1_pipeline.py）
+├── config/                        # テンプレート／デプロイ用メタデータ
+│   └── pipelines/
+│       └── boston_star_flex_template_metadata.json  # Flex テンプレートのメタ情報
+├── scripts/                       # ビルド・ローカル実行・送信・クリーンアップ用スクリプト
+│   ├── build_boston_star_flex_template.sh
+│   ├── run_local_dataflow.sh
+│   ├── submit_etl_boston_star_p1_pipeline.sh
+│   └── cleanup.sh                 # Dataflow/Vertex AI/BigQuery/GCS/Artifact Registry/ローカルの削除
+├── docker/                        # Dataflow 実行イメージ・開発用イメージの Dockerfile
+│   ├── Dockerfile.dataflow
+│   └── Dockerfile.dev
+├── pyproject.toml                 # Python プロジェクト定義・依存
+├── README.md                      # このドキュメント
+└── AGENTS.md                      # リポジトリ運用ガイド
+```
+
 ## 前提条件
-1. Google Cloud プロジェクト（本例: `yw-playground-dev`）に Artifact Registry（例: `dataflow-sample-yw`）、GCS バケット（例: `gs://dataflow-sample-yw/`）、BigQuery データセット（未作成ならこの手順で作る）が用意されている。
-2. `gcloud` CLI がインストールされ、`gcloud config set project yw-playground-dev`、`gcloud config set ai/region us-central1` などの基本設定が済んでいる（`gcloud components install alpha beta` も必要に応じて実行）。
+1. Google Cloud プロジェクト ID（例: `yw-playground-dev`）を決めておく。
+2. `gcloud` CLI がインストールされ、ローカルで認証済みであること（`gcloud auth application-default login` など）。
 3. Python 環境と依存は `uv` で管理する。まず `python3 -m pip install --user uv` で `uv` CLI を入手し、`uv sync`（`uv sync --frozen`）で `pyproject.toml` に定義されたパッケージをインストール、`uv run` で `python` や `kfp compiler` を起動する流れを守る。`pip install -e .` は不要で、`uv` が自身の `.venv` を作成するため手動で `python3 -m venv` を作る必要はありません。
 
 ## WSL2 Ubuntu での `uv` / Docker インストール
 
-WSL2 上の Ubuntu を使うことを前提に、`uv` CLI と Docker を入れる手順をまとめます。
+WSL2 上の Ubuntu を前提に、公式インストーラを使った `uv` CLI と Docker のセットアップ手順をまとめます。
 
 ### uv CLI の準備
-1. Ubuntu のパッケージを最新にし、Python 3 系と pip を揃える:
+1. パッケージ更新と基本ツール（`curl` はインストーラ取得に必須）をインストール:
    ```bash
    sudo apt update && sudo apt upgrade -y
-   sudo apt install -y python3 python3-pip
+   sudo apt install -y python3 python3-pip curl ca-certificates
    ```
-2. `uv` をユーザー領域にインストール:
+2. 公式インストーラで `uv` を導入:
    ```bash
-   python3 -m pip install --user uv
+   curl -LsSf https://astral.sh/uv/install.sh | sh
    ```
-3. `~/.local/bin` を `PATH` に入れてターミナル起動時に自動で利用できるように:
+   ※ WSL/Ubuntu ではデフォルトで `~/.local/bin` に配置されます。シェル再読み込み後に `uv --version` で確認してください。
+3. `PATH` に `~/.local/bin` が入っていない場合のみ追記:
    ```bash
-   echo 'export PATH="$PATH:$HOME/.local/bin"' >> ~/.bashrc
+   grep -q "$HOME/.local/bin" <<< "$PATH" || echo 'export PATH="$PATH:$HOME/.local/bin"' >> ~/.bashrc
    source ~/.bashrc
    ```
-4. `uv sync` を実行して依存関係を揃え、`uv run python --version` などで動作確認してください。
+4. 動作確認:
+   ```bash
+   uv --version
+   uv run python --version
+   ```
 
 ### Docker の準備
 1. より安定した開発を望むなら、Windows で Docker Desktop をインストールし、設定 > リソース > WSL インテグレーションから対象の Ubuntu ディストリビューションを有効化すると、WSL ターミナルから `docker` コマンドが使えるようになります。
@@ -42,64 +72,63 @@ WSL2 上の Ubuntu を使うことを前提に、`uv` CLI と Docker を入れ�
 4. `docker run --rm hello-world` のように実行して、クライアントとデーモンの接続が成功することを確認しましょう。
 
 ## 環境準備（BigQuery / GCS / データ）
-1. データセットを作成:
-   ```bash
-   gcloud config set project yw-playground-dev
-   bq --location=US mk --dataset yw-playground-dev:raw
-   bq --location=US mk --dataset yw-playground-dev:star
-   ```
-2. UCI ボストン住宅データをローカルに保存し、BigQuery にロード:
-   ```bash
-   python3 - <<'PY'
-   import urllib.request, csv
-   url = "https://archive.ics.uci.edu/ml/machine-learning-databases/housing/housing.data"
-   lines = [l for l in urllib.request.urlopen(url).read().decode().splitlines() if l.strip()]
-   with open("/tmp/boston_housing.csv", "w", encoding="utf-8") as f:
-       f.write("CRIM,ZN,INDUS,CHAS,NOX,RM,AGE,DIS,RAD,TAX,PTRATIO,B,LSTAT,MEDV\n")
-       f.writelines([",".join(line.split()) + "\n" for line in lines])
-   PY
-   bq --location=US load \
-     --replace --skip_leading_rows=1 \
-     yw-playground-dev:raw.boston_raw /tmp/boston_housing.csv \
-     CRIM:FLOAT,ZN:FLOAT,INDUS:FLOAT,CHAS:FLOAT,NOX:FLOAT,RM:FLOAT,AGE:FLOAT,DIS:FLOAT,RAD:FLOAT,TAX:FLOAT,PTRATIO:FLOAT,B:FLOAT,LSTAT:FLOAT,MEDV:FLOAT
-   ```
-3. GCS に出力先（`pipeline_root/`, `temp/`）を押さえ、Dataflow で空ディレクトリを使う:
-   ```bash
-   gsutil cp /dev/null gs://dataflow-sample-yw/pipeline_root/.keep
-   gsutil cp /dev/null gs://dataflow-sample-yw/temp/.keep
-   ```
+`scripts/setup.sh` 1 本で必要リソースを作成します。デフォルトでは以下を生成します:
+
+- Artifact Registry: `dataflow-<PROJECT_ID>` （リージョン: `us-central1`）
+- GCS バケット: `gs://dataflow-<PROJECT_ID>/` （`pipeline_root/`, `temp/` を作成）
+- BigQuery データセット: `<PROJECT_ID>:raw`, `<PROJECT_ID>:star`
+- サンプルテーブル: `<PROJECT_ID>.raw.boston_raw`
+- Dataflow 実行用サービスアカウント: `etl-dataflow-runner@<PROJECT_ID>.iam.gserviceaccount.com`
+
+実行例:
+```bash
+scripts/setup.sh --project yw-playground-dev
+# リージョンやリポジトリ名を変えたい場合:
+# scripts/setup.sh --project yw-playground-dev --dataflow-region us-east1 --artifact-region us-east1 --artifact-repo my-repo --bucket my-bucket --bucket-location US --dataset-location US
+```
 
 ## ローカル検証（オプション）
-- `uv run python -m pytest` で既存テスト（今は未実装）を走らせ、Beam モジュールが import できる状態を確認。
-- `scripts/run_local_dataflow.sh yw-playground-dev raw.boston_raw star.boston_fact_p1` で DirectRunner を起動し、`boston_star_pipeline.py` の変換が期待どおり動くかを目視確認する。
+- 目的: 本番と同じ Beam 変換をローカルの DirectRunner で動かし、BigQuery 入力→変換→BigQuery 出力が通るかを手元で確認します。
+- 実行: `scripts/run_local_dataflow.sh --project <PROJECT_ID>`  
+  - 何をしているか（概略）  
+    1) `docker/Dockerfile.dev` からローカル検証用イメージ `etl-dev` をビルド（無ければ自動ビルド）。  
+    2) ホストのソースツリーを `/app` にマウントし、`uv sync` で依存をセットアップ。  
+    3) `dataflow/star_schema/boston_star_pipeline.py` を DirectRunner で実行し、BigQuery から読み込み→カラム名を snake_case にリネーム→BigQuery へ書き込み。  
+    4) gcloud ADC をホストの `~/.config/gcloud` から読み込み、`GOOGLE_CLOUD_PROJECT` をコンテナ内に渡して API 認証を行う。  
+  - 入力/出力テーブルはデフォルトで `<PROJECT>.raw.boston_raw` / `<PROJECT>.star.boston_fact_p1`、一時 GCS は `gs://dataflow-<PROJECT>/temp`。必要に応じて `--input` / `--output` / `--temp-location` で上書きできます。
+  - 読み込み方式を DirectRead にしたことで、一時エクスポートのクリーンアップに伴う `No iterator is returned by the process method...` WARNING は発生しません。
+- 結果確認: `bq head <PROJECT>:star.boston_fact_p1` で出力テーブルの先頭行を確認し、変換が反映されていることを目視してください。
 
 ## flex テンプレートのビルド・再デプロイ
 1. `Dockerfile.dataflow` をベースに `boston-star-p1-flex` イメージを Artifact Registry に pushし、metadata を添えて GCS に JSON を出力:
    ```bash
-   scripts/build_boston_star_flex_template.sh yw-playground-dev us-west1 dataflow-sample-yw gs://dataflow-sample-yw
+   # setup.sh が作成したリソースをそのまま使う例
+   scripts/build_boston_star_flex_template.sh yw-playground-dev
    ```
+   第2引数以降でリージョンやリポジトリ/バケットパスを上書きできます（デフォルトは `us-central1`、`dataflow-<PROJECT_ID>`、`gs://dataflow-<PROJECT_ID>`）。
+   スクリプトのデフォルトも Artifact Registry/AI/Compute を Dataflow と同じリージョン（例: us-central1）に揃える前提なので、特別な理由がなければ同一リージョンで運用してください。
 2. `dataflow/star_schema/boston_star_pipeline.py` は Python 3.9 互換になるよう `Optional`/`Iterable` を使うように修正済みで、`RenameColumnsDoFn.process` は `Dict` を `yield` して completion する構造。これがないと type hint ヘルパーが `Dict[<class 'str'>, Any] is not iterable` を吐いて launcher が失敗します。
-3. `gs://dataflow-sample-yw/boston_star_p1_flex.json` には新しい image URI、metadata（parameters）も含まれているので、編集後は必ず再生成してください。
+3. `gs://dataflow-<PROJECT_ID>/boston_star_p1_flex.json` には新しい image URI、metadata（parameters）も含まれているので、編集後は必ず再生成してください。
 
 ## Dataflow flex template の起動
 1. `gcloud dataflow flex-template run` を叩き、project/region/temp/入力・出力テーブルを指定:
    ```bash
    gcloud dataflow flex-template run boston-star-p1-flex-$(date +%Y%m%d%H%M%S) \
      --project=yw-playground-dev --region=us-central1 \
-     --template-file-gcs-location=gs://dataflow-sample-yw/boston_star_p1_flex.json \
-     --parameters=project=yw-playground-dev,region=us-central1,temp_location=gs://dataflow-sample-yw/temp,input_table=yw-playground-dev.raw.boston_raw,output_table=yw-playground-dev.star.boston_fact_p1
+     --template-file-gcs-location=gs://dataflow-yw-playground-dev/boston_star_p1_flex.json \
+     --parameters=project=yw-playground-dev,region=us-central1,temp_location=gs://dataflow-yw-playground-dev/temp,input_table=yw-playground-dev.raw.boston_raw,output_table=yw-playground-dev.star.boston_fact_p1
    ```
 2. ジョブ ID が返ってくるので、`gcloud dataflow jobs describe <JOB_ID> --region=us-central1` あるいは `gcloud dataflow jobs list --status=active` で `JOB_STATE_RUNNING → JOB_STATE_DONE` を確認。
 3. 問題が出たら `gcloud logging read 'resource.type="dataflow_step" AND resource.labels.job_id="<JOB_ID>"'` で launcher とテンプレートのログを見て `Template launch failed` や `unsupported operand type(s)` などを解析し、ジョブの再ビルドを検討する。
 
 ## 結果の検証と後処理
 1. `bq --location=US query --nouse_legacy_sql 'SELECT COUNT(*) FROM `yw-playground-dev.star.boston_fact_p1`'` で行数（本例: 506）が入っていることを確認。
-2. 出力テーブルを `bq head yw-playground-dev:star.boston_fact_p1` で見てスキーマが `snake_case` になっていることを目視。
+2. 出力テーブルを `bq head yw-playground-dev:star.boston_fact_p1` で見てスキーマが `snake_case` になっていることを目視（bq CLI は `project:dataset.table` 形式も可）。
 3. 不要になった GCS/BigQuery の一時ファイルやジョブを削除したい場合は `gsutil rm` や `gcloud dataflow jobs cancel <JOB_ID>` を使う。
 
 ## Cleanup
 このリポジトリ経由で作成したクラウドリソースを一括で削除したいときは、以下の順序で実行するとリソース消し忘れを減らせます。
-1. Vertex AI Pipeline Job をキャンセル・削除（`aiplatform.PipelineJob.get('projects/…/pipelineJobs/etl-boston-star-p1-flex-…').cancel()` や `.delete()` を Python から実行し、`gcloud ai-platform` ではなく `aiplatform` SDK 経由で管理する）。既に完了済なら無視。`cleanup/cleanup_resources.py` を `uv run python cleanup/cleanup_resources.py --project=yw-playground-dev --pipeline-job=<resource-name>` として実行すると、Vertex AI → Dataflow → BigQuery → GCS → Artifact Registry →ローカルまで一通り削除できます（`--dry-run` でコマンド一覧のみ出力することも可能）。
+1. Vertex AI Pipeline Job をキャンセル・削除（`aiplatform.PipelineJob.get('projects/…/pipelineJobs/etl-boston-star-p1-flex-…').cancel()` や `.delete()` を Python から実行し、`gcloud ai-platform` ではなく `aiplatform` SDK 経由で管理する）。既に完了済なら無視。手早くまとめて消したい場合は `scripts/cleanup.sh --project=yw-playground-dev --pipeline-job=<resource-name>` を使うと、Vertex AI → Dataflow → BigQuery → GCS → Artifact Registry →ローカルまで一通り削除できます（`--dry-run` でコマンド一覧のみ出力することも可能）。
 2. Dataflow ジョブ（`gcloud dataflow jobs list --region=us-central1` で対象 `JOB_ID` を特定し、`gcloud dataflow jobs cancel <JOB_ID> --region=us-central1`）。
 3. BigQuery のテーブル／データセットを削除：
    ```bash
@@ -108,24 +137,27 @@ WSL2 上の Ubuntu を使うことを前提に、`uv` CLI と Docker を入れ�
    bq --location=US rm -r -f yw-playground-dev:raw
    bq --location=US rm -r -f yw-playground-dev:star
    ```
-4. GCS 上のテンプレート/パイプライン出力/一時オブジェクトを消す（`gsutil rm -r gs://dataflow-sample-yw/*` など、テンプレート JSON・`pipeline_root/`・`temp/`・`dataflow-staging-*` に注意）。
-5. Artifact Registry の Docker イメージ削除：`gcloud artifacts docker images delete us-west1-docker.pkg.dev/yw-playground-dev/dataflow-sample-yw/boston-star-p1-flex --delete-tags --quiet`。
+4. GCS 上のテンプレート/パイプライン出力/一時オブジェクトを消す（`gsutil rm -r gs://dataflow-yw-playground-dev/*` など、テンプレート JSON・`pipeline_root/`・`temp/`・`dataflow-staging-*` に注意）。
+5. Artifact Registry の Docker イメージ削除：`gcloud artifacts docker images delete us-central1-docker.pkg.dev/yw-playground-dev/dataflow-yw-playground-dev/boston-star-p1-flex --delete-tags --quiet`。
 6. `.venv` やその他ローカル生成物（`uv` の `.venv`、`__pycache__`）は `rm -rf .venv __pycache__` でクリーンアップ。
 
 この順番で実行すれば、Dataflow/Vertex AI から始まり BigQuery・GCS・Artifact Registry・ローカルの順にリソースを片付けられます。必要に応じて上記コマンドをスクリプト化して、定期的なクリーンアップを自動化しておくと安全です。
 
-### cleanup/cleanup_resources.py の使い方
-`cleanup/cleanup_resources.py` を `uv run python cleanup/cleanup_resources.py --project=yw-playground-dev --pipeline-job=<resource-name>` で起動すると、上記の6ステップを自動的に実行します。あらかじめ `uv sync` して依存を揃えるか、`.venv/bin/python cleanup/cleanup_resources.py …` で実行してください。`--dry-run` を付けると実際の削除コマンドを表示するだけになります。
+上記 1〜6 を一括で実行したい場合は、bash 版 `scripts/cleanup.sh` を使ってください。
+例: `scripts/cleanup.sh --project=yw-playground-dev --pipeline-job=<resource-name>`
+オプション:
+- `--dry-run`: 実行せずコマンドのみ表示
+- `--keep-bucket`, `--keep-artifact-repo`: バケット／Artifact Registry リポジトリを残したい場合に指定
 
 ### 削除の確認方法
 1. `gcloud dataflow jobs list --region=us-central1` で `boston-star-p1` 系のジョブが `Done`/`Cancelled` のみ（`Running`/`Queued` が無い）であることを確認。
 2. `bq --location=US ls yw-playground-dev:raw` / `yw-playground-dev:star` が `Not found`（データセット消去）であること。
-3. `gsutil ls gs://dataflow-sample-yw/` および `gsutil ls gs://dataflow-staging-us-central1-*` で空、または該当パスが存在しないこと。
-4. `gcloud artifacts docker images list us-west1-docker.pkg.dev/yw-playground-dev/dataflow-sample-yw` で該当イメージが返らないこと。
+3. `gsutil ls gs://dataflow-yw-playground-dev/` および `gsutil ls gs://dataflow-staging-us-central1-*` で空、または該当パスが存在しないこと。
+4. `gcloud artifacts docker images list us-central1-docker.pkg.dev/yw-playground-dev/dataflow-yw-playground-dev` で該当イメージが返らないこと。
 
 ## Onboarding (p1.1 の流れ)
 クラシックな Boston P1.1.1 の onboarding フローに沿って、以下のステップを補完しています。1〜4 を順番にこなすことで、まっさらな環境から BigQuery テーブルの準備、flex テンプレートのビルド＆ GCS 配備、Vertex AI/直接実行での Dataflow 送信までをカバーできます。
-1. ローカル DirectRunner の実行（`scripts/run_local_dataflow.sh PROJECT raw.boston_raw star.boston_fact_p1`）で `dataflow/star_schema/boston_star_pipeline.py` の変換を検証。
+1. ローカル DirectRunner の実行（`scripts/run_local_dataflow.sh PROJECT`。必要なら第2/第3引数でテーブルを上書き）で `dataflow/star_schema/boston_star_pipeline.py` の変換を検証。
 2. flex テンプレートのビルドと Artifact Registry/GCS へのデプロイ（`scripts/build_boston_star_flex_template.sh ...`）。
 3. Vertex AI Pipeline からプロダクション運用に載せる層として `scripts/submit_etl_boston_star_p1_pipeline.sh ...` を使う（`pipelines/etl_boston_star_p1_pipeline.py` 内 `DataflowFlexTemplateJobOp` がエントリ）。
 4. 必要に応じて `gcloud dataflow flex-template run ...` で直接ジョブを起動し、`bq` で出力を確認。

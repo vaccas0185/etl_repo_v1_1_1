@@ -1,4 +1,5 @@
 import argparse
+import logging
 from typing import Dict, Any, Tuple, List, Optional, Iterable
 
 import apache_beam as beam
@@ -42,6 +43,17 @@ def run(
     save_main_session: bool = True,
     pipeline_args: Optional[List[str]] = None,
 ) -> None:
+    # Beam 内部 DoFn から出る「No iterator is returned...」警告を抑制する
+    logging.getLogger("apache_beam.transforms.core").setLevel(logging.ERROR)
+
+    def normalize_table(table: str) -> str:
+        # Beam の BQ I/O は project.dataset.table 形式を要求するため、
+        # 誤って project:dataset.table で渡された場合はドットに揃える。
+        return table.replace(":", ".", 1)
+
+    input_table = normalize_table(input_table)
+    output_table = normalize_table(output_table)
+
     extra_options: Dict[str, Any] = {"project": project}
 
     if region:
@@ -60,7 +72,12 @@ def run(
     with beam.Pipeline(options=options) as p:
         (
             p
-            | "ReadFromBigQuery" >> beam.io.ReadFromBigQuery(query=query, use_standard_sql=True)
+            | "ReadFromBigQuery"
+            >> beam.io.ReadFromBigQuery(
+                query=query,
+                use_standard_sql=True,
+                method=beam.io.ReadFromBigQuery.Method.DIRECT_READ,
+            )
             | "RenameColumns" >> beam.ParDo(RenameColumnsDoFn())
             | "WriteToBigQuery"
             >> beam.io.WriteToBigQuery(

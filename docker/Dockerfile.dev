@@ -1,14 +1,14 @@
 # syntax=docker/dockerfile:1
 
-FROM python:3.12-slim AS base
+FROM python:3.12-slim AS app
 
-RUN apt-get update && apt-get install -y --no-install-recommends     git curl ca-certificates   && rm -rf /var/lib/apt/lists/*
+# 基本ツールと uv を公式インストーラで導入（WSL/ホストと同じ手順）
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -LsSf https://astral.sh/uv/install.sh | sh
 
-FROM ghcr.io/astral-sh/uv:python3.12-bookworm AS uv-src
-
-FROM base AS app
-
-COPY --from=uv-src /uv /uvx /bin/
+ENV PATH="/root/.local/bin:${PATH}"
 
 WORKDIR /app
 
