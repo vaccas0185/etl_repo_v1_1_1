@@ -2,9 +2,9 @@
 
 FROM python:3.12-slim AS app
 
-# 基本ツールと uv を公式インストーラで導入（WSL/ホストと同じ手順）
+# 基本ツール + Java ランタイム（Beam Storage Write API の拡張サービスに必要）と uv を導入
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    git curl ca-certificates \
+    git curl ca-certificates default-jre-headless \
     && rm -rf /var/lib/apt/lists/* \
     && curl -LsSf https://astral.sh/uv/install.sh | sh
 

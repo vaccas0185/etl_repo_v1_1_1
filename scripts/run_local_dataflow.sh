@@ -58,11 +58,21 @@ OUTPUT_TABLE="$(normalize_table "${OUTPUT_TABLE:-${PROJECT_ID}.star.boston_fact_
 TEMP_LOCATION="${TEMP_LOCATION:-gs://dataflow-${PROJECT_ID}/temp}"
 
 ensure_dev_image() {
-  if docker image inspect "${DEV_IMAGE}" >/dev/null 2>&1; then
-    return
+  local needs_build=false
+  if ! docker image inspect "${DEV_IMAGE}" >/dev/null 2>&1; then
+    needs_build=true
+  else
+    # 旧イメージに Java が無い場合は再ビルド
+    if ! docker run --rm "${DEV_IMAGE}" java -version >/dev/null 2>&1; then
+      echo "[info] existing ${DEV_IMAGE} lacks Java; rebuilding"
+      needs_build=true
+    fi
   fi
-  echo "[run] building ${DEV_IMAGE} image from docker/Dockerfile.dev"
-  docker build -f "${ROOT_DIR}/docker/Dockerfile.dev" -t "${DEV_IMAGE}" "${ROOT_DIR}"
+
+  if ${needs_build}; then
+    echo "[run] building ${DEV_IMAGE} image from docker/Dockerfile.dev"
+    docker build -f "${ROOT_DIR}/docker/Dockerfile.dev" -t "${DEV_IMAGE}" "${ROOT_DIR}"
+  fi
 }
 
 ensure_dev_image

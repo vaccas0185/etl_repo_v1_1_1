@@ -18,6 +18,7 @@ README
 ├── scripts/                       # ビルド・ローカル実行・送信・クリーンアップ用スクリプト
 │   ├── build_boston_star_flex_template.sh
 │   ├── run_local_dataflow.sh
+│   ├── run_flex_template.sh       # Flex テンプレートを gcloud 経由で起動
 │   ├── submit_etl_boston_star_p1_pipeline.sh
 │   └── cleanup.sh                 # Dataflow/Vertex AI/BigQuery/GCS/Artifact Registry/ローカルの削除
 ├── docker/                        # Dataflow 実行イメージ・開発用イメージの Dockerfile
@@ -91,35 +92,34 @@ scripts/setup.sh --project yw-playground-dev
 - 目的: 本番と同じ Beam 変換をローカルの DirectRunner で動かし、BigQuery 入力→変換→BigQuery 出力が通るかを手元で確認します。
 - 実行: `scripts/run_local_dataflow.sh --project <PROJECT_ID>`  
   - 何をしているか（概略）  
-    1) `docker/Dockerfile.dev` からローカル検証用イメージ `etl-dev` をビルド（無ければ自動ビルド）。  
+    1) `docker/Dockerfile.dev` からローカル検証用イメージ `etl-dev` をビルド（無ければ自動ビルド、Storage Write API 用に JRE を内包）。既に作成済みの `etl-dev` がある場合は再ビルドを推奨（`docker rmi etl-dev` など）。  
     2) ホストのソースツリーを `/app` にマウントし、`uv sync` で依存をセットアップ。  
-    3) `dataflow/star_schema/boston_star_pipeline.py` を DirectRunner で実行し、BigQuery から読み込み→カラム名を snake_case にリネーム→BigQuery へ書き込み。  
+    3) `dataflow/star_schema/boston_star_pipeline.py` を DirectRunner で実行し、BigQuery Storage API (DirectRead) で読み込み→カラム名を snake_case にリネーム→BigQuery へ書き込み（Storage Write API を使用し、GCS ステージングなしのバッチ挿入）。  
     4) gcloud ADC をホストの `~/.config/gcloud` から読み込み、`GOOGLE_CLOUD_PROJECT` をコンテナ内に渡して API 認証を行う。  
   - 入力/出力テーブルはデフォルトで `<PROJECT>.raw.boston_raw` / `<PROJECT>.star.boston_fact_p1`、一時 GCS は `gs://dataflow-<PROJECT>/temp`。必要に応じて `--input` / `--output` / `--temp-location` で上書きできます。
   - 読み込み方式を DirectRead にしたことで、一時エクスポートのクリーンアップに伴う `No iterator is returned by the process method...` WARNING は発生しません。
 - 結果確認: `bq head <PROJECT>:star.boston_fact_p1` で出力テーブルの先頭行を確認し、変換が反映されていることを目視してください。
 
 ## flex テンプレートのビルド・再デプロイ
-1. `Dockerfile.dataflow` をベースに `boston-star-p1-flex` イメージを Artifact Registry に pushし、metadata を添えて GCS に JSON を出力:
-   ```bash
-   # setup.sh が作成したリソースをそのまま使う例
-   scripts/build_boston_star_flex_template.sh yw-playground-dev
-   ```
-   第2引数以降でリージョンやリポジトリ/バケットパスを上書きできます（デフォルトは `us-central1`、`dataflow-<PROJECT_ID>`、`gs://dataflow-<PROJECT_ID>`）。
-   スクリプトのデフォルトも Artifact Registry/AI/Compute を Dataflow と同じリージョン（例: us-central1）に揃える前提なので、特別な理由がなければ同一リージョンで運用してください。
-2. `dataflow/star_schema/boston_star_pipeline.py` は Python 3.9 互換になるよう `Optional`/`Iterable` を使うように修正済みで、`RenameColumnsDoFn.process` は `Dict` を `yield` して completion する構造。これがないと type hint ヘルパーが `Dict[<class 'str'>, Any] is not iterable` を吐いて launcher が失敗します。
-3. `gs://dataflow-<PROJECT_ID>/boston_star_p1_flex.json` には新しい image URI、metadata（parameters）も含まれているので、編集後は必ず再生成してください。
+- 目的: Dataflow Flex Template 用の実行イメージを Artifact Registry にビルド＆pushし、テンプレート JSON を GCS に配置して再デプロイできる状態にする。
+- 実行: `scripts/build_boston_star_flex_template.sh <PROJECT_ID>` またはロングオプションで `scripts/build_boston_star_flex_template.sh --project <PROJECT_ID> [--region ... --artifact-repo ... --template-gcs-path ...]`  
+  - デフォルト設定: REGION=`us-central1`、ARTIFACT_REPO=`dataflow-<PROJECT_ID>`、TEMPLATE_PATH=`gs://dataflow-<PROJECT_ID>/boston_star_p1_flex.json`。必要に応じてフラグや位置引数で上書き可能。  
+  - 何をしているか（概略）  
+    1) `docker/Dockerfile.dataflow` から `boston-star-p1-flex` イメージをビルド。  
+    2) イメージを Artifact Registry (`<REGION>-docker.pkg.dev/<PROJECT_ID>/<ARTIFACT_REPO>/...`) に push。  
+    3) `config/pipelines/boston_star_flex_template_metadata.json` を用いて Flex Template JSON を生成し、GCS (`TEMPLATE_PATH`) に保存。  
+  - リージョンは Artifact Registry / Dataflow / AI Platform を揃える運用を想定（特別な理由がなければ `us-central1` のままで可）。
+- 再生成が必要なタイミング: パイプラインコード変更、依存更新、Dockerfile.dataflow 更新、テンプレート metadata 更新時は必ず上記スクリプトを再実行し、GCS 上の JSON を更新する。
 
 ## Dataflow flex template の起動
-1. `gcloud dataflow flex-template run` を叩き、project/region/temp/入力・出力テーブルを指定:
-   ```bash
-   gcloud dataflow flex-template run boston-star-p1-flex-$(date +%Y%m%d%H%M%S) \
-     --project=yw-playground-dev --region=us-central1 \
-     --template-file-gcs-location=gs://dataflow-yw-playground-dev/boston_star_p1_flex.json \
-     --parameters=project=yw-playground-dev,region=us-central1,temp_location=gs://dataflow-yw-playground-dev/temp,input_table=yw-playground-dev.raw.boston_raw,output_table=yw-playground-dev.star.boston_fact_p1
-   ```
-2. ジョブ ID が返ってくるので、`gcloud dataflow jobs describe <JOB_ID> --region=us-central1` あるいは `gcloud dataflow jobs list --status=active` で `JOB_STATE_RUNNING → JOB_STATE_DONE` を確認。
-3. 問題が出たら `gcloud logging read 'resource.type="dataflow_step" AND resource.labels.job_id="<JOB_ID>"'` で launcher とテンプレートのログを見て `Template launch failed` や `unsupported operand type(s)` などを解析し、ジョブの再ビルドを検討する。
+- 実行: `scripts/run_flex_template.sh <PROJECT_ID>`（プロジェクト ID だけ指定すれば他はデフォルトを使用）  
+  - デフォルト: REGION=`us-central1`、TEMPLATE=`gs://dataflow-<PROJECT_ID>/boston_star_p1_flex.json`、TEMP=`gs://dataflow-<PROJECT_ID>/temp`、INPUT=`<PROJECT_ID>.raw.boston_raw`、OUTPUT=`<PROJECT_ID>.star.boston_fact_p1`、SA=`etl-dataflow-runner@<PROJECT_ID>.iam.gserviceaccount.com`。必要に応じて `--region` / `--template` / `--temp-location` / `--input` / `--output` / `--service-account` / `--job-name` で上書き可。
+  - 例:
+    ```bash
+    scripts/run_flex_template.sh yw-playground-dev
+    ```
+- モニタリング: `gcloud dataflow jobs describe <JOB_ID> --region=<REGION>` や `gcloud dataflow jobs list --status=active --region=<REGION>` で進捗確認。
+- トラブルシュート: 問題が出た場合は `gcloud logging read 'resource.type="dataflow_step" AND resource.labels.job_id="<JOB_ID>"' --project <PROJECT_ID>` でテンプレート実行時のログを確認し、必要なら再ビルド/再実行。
 
 ## 結果の検証と後処理
 1. `bq --location=US query --nouse_legacy_sql 'SELECT COUNT(*) FROM `yw-playground-dev.star.boston_fact_p1`'` で行数（本例: 506）が入っていることを確認。

@@ -102,6 +102,8 @@ def run(
                 },
                 write_disposition=beam.io.BigQueryDisposition.WRITE_TRUNCATE,
                 create_disposition=beam.io.BigQueryDisposition.CREATE_IF_NEEDED,
+                # Storage Write API を使い、GCS ステージングなしでバッチ挿入する
+                method=beam.io.WriteToBigQuery.Method.STORAGE_WRITE_API,
             )
         )
 
